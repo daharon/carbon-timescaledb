@@ -5,3 +5,4 @@ authors = ["Dan Aharon <dan@danielaharon.com>"]
 edition = "2018"
 
 [dependencies]
+nom = "4.1.1"
