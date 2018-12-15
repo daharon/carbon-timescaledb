@@ -30,7 +30,6 @@ pub fn run(config: Arc<Config>) {
             Err(e) => eprintln!("Client connection failed:  {}", e),
         }
     }
-
 }
 
 fn handle_stream(config: Arc<Config>, stream: TcpStream) {
@@ -48,7 +47,7 @@ fn handle_stream(config: Arc<Config>, stream: TcpStream) {
         match entry {
             Ok(entry) => {
                 println!("Read the following bytes:  {}", entry);
-                let metric = parse_entry(&entry);
+                let metric = Metric::parse(&entry);
                 println!("Parsed metric:  {:?}", metric);
                 write_to_db(&db, &metric);
             },
@@ -63,14 +62,5 @@ fn write_to_db(db: &Connection, metric: &Metric) {
     match result {
         Ok(rows_modified) => println!("Inserted {} metric(s).", rows_modified),
         Err(e) => eprintln!("Error from PostgreSQL:  {}", e),
-    }
-}
-
-fn parse_entry(entry: & String) -> Metric {
-    let mut parts = entry.split_whitespace();
-    Metric {
-        path: parts.next().unwrap(),
-        value: parts.next().unwrap().parse::<f64>().unwrap(),
-        timestamp: parts.next().unwrap().parse::<i64>().unwrap(),
     }
 }

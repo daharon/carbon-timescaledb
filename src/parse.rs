@@ -13,8 +13,13 @@ pub struct Metric<'a> {
 }
 
 
-/*
-pub fn parse(data: &str) -> Result<Metric, nom::Err::Error> {
-
+impl<'a> Metric<'a> {
+    pub fn parse(data: &'a str) -> Self {
+        let mut parts = data.split_whitespace();
+        Self {
+            path: parts.next().unwrap(),
+            value: parts.next().unwrap().parse::<f64>().unwrap(),
+            timestamp: parts.next().unwrap().parse::<i64>().unwrap(),
+        }
+    }
 }
-*/
