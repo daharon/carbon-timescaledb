@@ -2,8 +2,8 @@ use std::sync::Arc;
 use std::net::IpAddr;
 use std::str::FromStr;
 
+use carbon_timescaledb::config::Config;
 use carbon_timescaledb::server;
-use carbon_timescaledb::server::config::Config;
 
 
 fn main() {

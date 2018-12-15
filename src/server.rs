@@ -11,11 +11,8 @@ use postgres::{
     Connection, TlsMode, params::ConnectParams, params::Host
 };
 
-use crate::carbon::parse::Metric;
-use crate::server::config::Config;
-
-
-pub mod config;
+use crate::config::Config;
+use crate::parse::Metric;
 
 
 pub fn run(config: Arc<Config>) {
@@ -62,7 +59,7 @@ fn handle_stream(config: Arc<Config>, stream: TcpStream) {
 
 fn write_to_db(db: &Connection, metric: &Metric) {
     let result = db.execute("INSERT INTO metrics (path, value, timestamp) VALUES ($1, $2, $3)",
-        &[&metric.path, &metric.value, &NaiveDateTime::from_timestamp(metric.timestamp, 0)]);
+                            &[&metric.path, &metric.value, &NaiveDateTime::from_timestamp(metric.timestamp, 0)]);
     match result {
         Ok(rows_modified) => println!("Inserted {} metric(s).", rows_modified),
         Err(e) => eprintln!("Error from PostgreSQL:  {}", e),
