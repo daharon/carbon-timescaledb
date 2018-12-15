@@ -9,7 +9,7 @@ use nom::{named, do_parse};
 pub struct Metric<'a> {
     pub path: &'a str,
     pub value: f64,
-    pub timestamp: i64,
+    pub timestamp: i32,
 }
 
 
@@ -19,7 +19,7 @@ impl<'a> Metric<'a> {
         Self {
             path: parts.next().unwrap(),
             value: parts.next().unwrap().parse::<f64>().unwrap(),
-            timestamp: parts.next().unwrap().parse::<i64>().unwrap(),
+            timestamp: parts.next().unwrap().parse::<i32>().unwrap(),
         }
     }
 }

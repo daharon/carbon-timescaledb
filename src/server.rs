@@ -57,8 +57,8 @@ fn handle_stream(config: Arc<Config>, stream: TcpStream) {
 }
 
 fn write_to_db(db: &Connection, metric: &Metric) {
-    let result = db.execute("INSERT INTO metrics (path, value, timestamp) VALUES ($1, $2, $3)",
-                            &[&metric.path, &metric.value, &NaiveDateTime::from_timestamp(metric.timestamp, 0)]);
+    let result = db.execute("SELECT insert_metric($1, $2, $3)",
+        &[&metric.path, &metric.value, &metric.timestamp]);
     match result {
         Ok(rows_modified) => println!("Inserted {} metric(s).", rows_modified),
         Err(e) => eprintln!("Error from PostgreSQL:  {}", e),
