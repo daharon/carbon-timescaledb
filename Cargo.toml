@@ -5,6 +5,7 @@ authors = ["Dan Aharon <dan@danielaharon.com>"]
 edition = "2018"
 
 [dependencies]
+jemallocator = "0.1.9"
 nom = "4.1.1"
 chrono = "0.4.6"
 postgres = { version = "0.15.2", features = ["with-chrono"] }

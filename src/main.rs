@@ -6,6 +6,10 @@ use carbon_timescaledb::config::Config;
 use carbon_timescaledb::server;
 
 
+#[global_allocator]
+static ALLOC: jemallocator::Jemalloc = jemallocator::Jemalloc;
+
+
 fn main() {
     let config = Config {
         listen_ip_addr: IpAddr::from_str("127.0.0.1").unwrap(),
