@@ -9,7 +9,7 @@ use nom::{named, do_parse};
 pub struct Metric<'a> {
     pub path: &'a str,
     pub value: f64,
-    pub timestamp: u64,
+    pub timestamp: i64,
 }
 
 
