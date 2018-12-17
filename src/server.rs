@@ -6,10 +6,11 @@ use std::net::{
     SocketAddr, TcpListener, TcpStream
 };
 
-use chrono::NaiveDateTime;
 use postgres::{
     Connection, TlsMode, params::ConnectParams, params::Host
 };
+use postgres::types::ToSql;
+use postgres::stmt::Statement;
 
 use crate::config::Config;
 use crate::parse::Metric;
@@ -33,6 +34,7 @@ pub fn run(config: Arc<Config>) {
 }
 
 fn handle_stream(config: Arc<Config>, stream: TcpStream) {
+    let client_ip = stream.peer_addr().unwrap().ip().clone();
     println!("Connecting to database `{}` at {}:{}...", config.db_name, config.db_host, config.db_port);
     let db_params = ConnectParams::builder()
         .port(config.db_port)
@@ -54,13 +56,38 @@ fn handle_stream(config: Arc<Config>, stream: TcpStream) {
             Err(e) => eprintln!("Error reading stream:  {}", e),
         }
     }
+    println!("Client from {} disconnected.", client_ip);
 }
 
 fn write_to_db(db: &Connection, metric: &Metric) {
-    let result = db.execute("SELECT insert_metric($1, $2, $3)",
-        &[&metric.path, &metric.value, &metric.timestamp]);
+    /*
+    // Example of converting variable into Postgres compatible input.
+    let mut p_timestamp = Vec::<u8>::new();
+    metric.timestamp.to_sql(&postgres::types::INT4, &mut p_timestamp);
+    */
+    let mut metrics = Vec::new();
+    metrics.push(metric);
+    let (query, params) = prepare_insert(db, &metrics);
+    println!("Query:  {}", query);
+    println!("Params:  {:?}", params);
+
+    let result = db.execute(&query, &params);
     match result {
         Ok(rows_modified) => println!("Inserted {} metric(s).", rows_modified),
         Err(e) => eprintln!("Error from PostgreSQL:  {}", e),
     }
+}
+
+fn prepare_insert<'a>(db: &Connection, metrics: &Vec<&'a Metric>) -> (String, Vec<&'a ToSql>) {
+    let mut tuples: Vec<String> = Vec::new();
+    let mut params: Vec<&ToSql> = Vec::new();
+    for (index, metric) in metrics.iter().enumerate() {
+        tuples.push(format!("(${}, ${}, ${})", index + 1, index + 2, index + 3));
+
+        params.push(&metric.path);
+        params.push(&metric.value);
+        params.push(&metric.timestamp);
+    }
+    let query = format!("SELECT insert_metrics({})", tuples.join(","));
+    (query, params)
 }
