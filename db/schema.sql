@@ -6,6 +6,7 @@ CREATE EXTENSION IF NOT EXISTS timescaledb CASCADE;
 
 CREATE TABLE paths (
     id BIGSERIAL PRIMARY KEY,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
     path TEXT NOT NULL UNIQUE
 );
 COMMENT ON TABLE paths IS 'Unique identifiers for metric series';
@@ -50,8 +51,13 @@ BEGIN
         END;
 
         -- Insert the metric.
-        INSERT INTO metrics (path_id, value, timestamp)
-            VALUES (path_id, metric_data.value, to_timestamp(metric_data.unix_timestamp));
+        BEGIN
+            INSERT INTO metrics (path_id, value, timestamp)
+                VALUES (path_id, metric_data.value, to_timestamp(metric_data.unix_timestamp));
+        EXCEPTION
+            WHEN UNIQUE_VIOLATION THEN
+                RAISE NOTICE '%s', SQLERRM;
+        END;
     END LOOP;
 END;
 $$;

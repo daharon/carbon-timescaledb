@@ -6,6 +6,7 @@ use std::net::{
     SocketAddr, TcpListener, TcpStream
 };
 
+use itertools::Itertools;
 use postgres::{
     Connection, TlsMode, params::ConnectParams, params::Host
 };
@@ -14,6 +15,9 @@ use postgres::stmt::Statement;
 
 use crate::config::Config;
 use crate::parse::Metric;
+
+
+static CHUNK_SIZE: usize = 100;
 
 
 pub fn run(config: Arc<Config>) {
@@ -45,29 +49,35 @@ fn handle_stream(config: Arc<Config>, stream: TcpStream) {
 
     println!("Listening for metrics...");
     let buf = BufReader::new(stream);
-    for entry in buf.lines() {
-        match entry {
-            Ok(entry) => {
-                println!("Read the following bytes:  {}", entry);
-                let metric = Metric::parse(&entry);
-                println!("Parsed metric:  {:?}", metric);
-                write_to_db(&db, &metric);
-            },
-            Err(e) => eprintln!("Error reading stream:  {}", e),
-        }
+    let lines = buf.lines().chunks(CHUNK_SIZE);
+    for entries in lines.into_iter() {
+        let metrics: Vec<Option<Metric>> = entries.map(|entry| {
+            match entry {
+                Ok(entry) => {
+                    println!("Read the following bytes:  {}", entry);
+                    let metric = Metric::parse(&entry);
+                    println!("Parsed metric:  {:?}", metric);
+                    Some(metric)
+                },
+                Err(e) => {
+                    eprintln!("Error reading stream:  {}", e);
+                    None
+                },
+            }
+        }).collect();
+        println!("Metrics collected:  {}", metrics.len());
+        write_to_db(&db, &metrics);
     }
     println!("Client from {} disconnected.", client_ip);
 }
 
-fn write_to_db(db: &Connection, metric: &Metric) {
+fn write_to_db(db: &Connection, metrics: &[Option<Metric>]) {
     /*
     // Example of converting variable into Postgres compatible input.
     let mut p_timestamp = Vec::<u8>::new();
     metric.timestamp.to_sql(&postgres::types::INT4, &mut p_timestamp);
     */
-    let mut metrics = Vec::new();
-    metrics.push(metric);
-    let (query, params) = prepare_insert(db, &metrics);
+    let (query, params) = prepare_insert(metrics);
     println!("Query:  {}", query);
     println!("Params:  {:?}", params);
 
@@ -78,15 +88,19 @@ fn write_to_db(db: &Connection, metric: &Metric) {
     }
 }
 
-fn prepare_insert<'a>(db: &Connection, metrics: &Vec<&'a Metric>) -> (String, Vec<&'a ToSql>) {
+fn prepare_insert<'a>(metrics: &'a [Option<Metric>]) -> (String, Vec<&'a ToSql>) {
     let mut tuples: Vec<String> = Vec::new();
     let mut params: Vec<&ToSql> = Vec::new();
+    let mut base: usize;
     for (index, metric) in metrics.iter().enumerate() {
-        tuples.push(format!("(${}, ${}, ${})", index + 1, index + 2, index + 3));
+        if let Some(metric) = metric {
+            base = index * 3;
+            tuples.push(format!("(${}, ${}, ${})", base + 1, base + 2, base + 3));
 
-        params.push(&metric.path);
-        params.push(&metric.value);
-        params.push(&metric.timestamp);
+            params.push(&metric.path);
+            params.push(&metric.value);
+            params.push(&metric.timestamp);
+        }
     }
     let query = format!("SELECT insert_metrics({})", tuples.join(","));
     (query, params)
