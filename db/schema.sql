@@ -36,6 +36,7 @@ CREATE OR REPLACE FUNCTION insert_metrics(VARIADIC _metrics metric[]) RETURNS vo
 DECLARE
     path_id BIGINT;
     metric_data RECORD;
+    err_detail TEXT;
 BEGIN
     FOR metric_data IN SELECT path, value, unix_timestamp FROM unnest(_metrics) LOOP
         -- Get the path ID from the `paths` table.
@@ -56,7 +57,8 @@ BEGIN
                 VALUES (path_id, metric_data.value, to_timestamp(metric_data.unix_timestamp));
         EXCEPTION
             WHEN UNIQUE_VIOLATION THEN
-                RAISE NOTICE '%s', SQLERRM;
+                GET STACKED DIAGNOSTICS err_detail = PG_EXCEPTION_DETAIL;
+                RAISE WARNING '%', err_detail;
         END;
     END LOOP;
 END;
