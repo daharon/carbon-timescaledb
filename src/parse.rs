@@ -2,7 +2,9 @@
 //!
 //! See https://graphite.readthedocs.io/en/latest/feeding-carbon.html#step-3-understanding-the-graphite-message-format
 
-use nom::{named, do_parse};
+use std::error::Error;
+use std::fmt;
+use std::str::FromStr;
 
 
 #[derive(Debug)]
@@ -12,14 +14,34 @@ pub struct Metric {
     pub timestamp: i32,
 }
 
+#[derive(Debug)]
+pub struct MetricParseError {
+    pub description: String,
+}
 
-impl Metric {
-    pub fn parse(data: &str) -> Self {
-        let mut parts = data.split_whitespace();
-        Self {
-            path: String::from(parts.next().unwrap()),
-            value: parts.next().unwrap().parse::<f64>().unwrap(),
-            timestamp: parts.next().unwrap().parse::<i32>().unwrap(),
-        }
+impl Error for MetricParseError { }
+
+impl fmt::Display for MetricParseError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "Error parsing string: {}", self.description)
+    }
+}
+
+impl FromStr for Metric {
+    type Err = MetricParseError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let mut parts = s.split_whitespace();
+        let path = String::from(parts.next().unwrap());
+        let value = parts.next().unwrap().parse::<f64>()
+            .map_err(|e| { MetricParseError { description: e.description().to_string() } })?;
+        let timestamp = parts.next().unwrap().parse::<i32>()
+            .map_err(|e| { MetricParseError { description: e.description().to_string() } })?;
+        let metric = Self {
+            path,
+            value,
+            timestamp,
+        };
+        Ok(metric)
     }
 }
