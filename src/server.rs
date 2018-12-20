@@ -18,8 +18,9 @@ use crate::parse::Metric;
 
 
 static CHUNK_SIZE: usize = 100;
-static NUM_THREADS: usize = 1;
+static NUM_THREADS: usize = 4;
 static CHANNEL_CAPACITY: usize = 1000;
+static WRITE_TO_DB: fn(&Connection, &[Option<Metric>]) = write_to_db_multi;
 
 
 pub fn run(config: Arc<Config>) {
@@ -96,11 +97,11 @@ fn metrics_consumer(config: Arc<Config>, recv: Receiver<String>) {
             }
         }).collect();
         println!("{} - Metrics collected:  {}", thread_name, metrics.len());
-        write_to_db(&db, &metrics);
+        WRITE_TO_DB(&db, &metrics);
     }
 }
 
-fn write_to_db(db: &Connection, metrics: &[Option<Metric>]) {
+fn write_to_db_multi(db: &Connection, metrics: &[Option<Metric>]) {
     /*
     // Example of converting variable into Postgres compatible input.
     let mut p_timestamp = Vec::<u8>::new();
@@ -114,6 +115,19 @@ fn write_to_db(db: &Connection, metrics: &[Option<Metric>]) {
     match result {
         Ok(rows_modified) => println!("Inserted {} metric(s).", rows_modified),
         Err(e) => eprintln!("Error from PostgreSQL:  {}", e),
+    }
+}
+
+fn write_to_db_single(db: &Connection, metrics: &[Option<Metric>]) {
+    for metric in metrics {
+        if let Some(m) = metric {
+            let result = db.execute("SELECT insert_metric($1, $2, $3)",
+                &[&m.path, &m.value, &m.timestamp]);
+            match result {
+                Ok(rows_modified) => println!("Inserted {} metric(s).", rows_modified),
+                Err(e) => eprintln!("Error from PostgreSQL:  {}", e),
+            }
+        }
     }
 }
 
