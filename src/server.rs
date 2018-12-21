@@ -17,10 +17,10 @@ use crate::config::Config;
 use crate::parse::Metric;
 
 
-static CHUNK_SIZE: usize = 100;
-static NUM_THREADS: usize = 4;
-static CHANNEL_CAPACITY: usize = 1000;
-static WRITE_TO_DB: fn(&Connection, &[Option<Metric>]) = write_to_db_multi;
+static CHUNK_SIZE: usize = 2000;
+static NUM_THREADS: usize = 6;
+static CHANNEL_CAPACITY: usize = 20000;
+static WRITE_TO_DB: fn(&Connection, &[Option<Metric>]) = write_to_db_copy_in;
 
 
 pub fn run(config: Arc<Config>) {
@@ -101,15 +101,43 @@ fn metrics_consumer(config: Arc<Config>, recv: Receiver<String>) {
     }
 }
 
+/// Batch-write metrics using the `COPY FROM STDIN` statement provided by [postgres::stmt::Statement::copy_in].
+fn write_to_db_copy_in(db: &Connection, metrics: &[Option<Metric>]) {
+    let stmt = db.prepare("COPY metrics_view FROM STDIN").unwrap();
+    let input = metrics.iter().map(|metric| {
+        match metric {
+            Some(m) => {
+                // Sanitize the values.
+                /*
+                let mut p_path = Vec::<u8>::new();
+                m.path.to_sql(&postgres::types::TEXT, &mut p_path);
+                let mut p_value = Vec::<u8>::new();
+                m.value.to_sql(&postgres::types::FLOAT8, &mut p_value);
+                let mut p_timestamp = Vec::<u8>::new();
+                m.timestamp.to_sql(&postgres::types::INT4, &mut p_timestamp);
+                */
+
+                format!("{}\t{}\t{}\n", m.path, m.timestamp, m.value)
+            },
+            None => String::new(),
+        }
+    }).fold(String::new(), |out, line| { out + line.as_str() } );
+
+    println!("Input bytes:  {}", input);
+    let result = stmt.copy_in(&[], &mut input.as_bytes());
+    match result {
+        Ok(rows_modified) => println!("Inserted {} metric(s).", rows_modified),
+        Err(e) => eprintln!("Error from PostgreSQL:  {}", e),
+    }
+}
+
+/// Batch-write metrics using the variadic `insert_metrics` stored procedure.
+/// `insert_metrics` can handle 100 arguments, which is a limitation of
+/// PostgreSQL.
 fn write_to_db_multi(db: &Connection, metrics: &[Option<Metric>]) {
-    /*
-    // Example of converting variable into Postgres compatible input.
-    let mut p_timestamp = Vec::<u8>::new();
-    metric.timestamp.to_sql(&postgres::types::INT4, &mut p_timestamp);
-    */
     let (query, params) = prepare_insert(metrics);
-    println!("Query:  {}", query);
-    println!("Params:  {:?}", params);
+//    println!("Query:  {}", query);
+//    println!("Params:  {:?}", params);
 
     let result = db.execute(&query, &params);
     match result {
@@ -118,6 +146,8 @@ fn write_to_db_multi(db: &Connection, metrics: &[Option<Metric>]) {
     }
 }
 
+/// Write metrics using the `insert_metric` stored procedure.
+/// Metrics will be written one at a time.
 fn write_to_db_single(db: &Connection, metrics: &[Option<Metric>]) {
     for metric in metrics {
         if let Some(m) = metric {

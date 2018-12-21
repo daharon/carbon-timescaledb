@@ -92,3 +92,21 @@ BEGIN
 END;
 $$;
 COMMENT ON FUNCTION insert_metric IS 'Insert a single metric.  SELECT insert_metric(''x.y.z'', 12.0, 1544988880);';
+
+CREATE VIEW metrics_view AS
+    SELECT paths.path, extract(epoch from metrics.timestamp)::int AS timestamp, metrics.value
+    FROM metrics
+    JOIN paths ON paths.id = metrics.path_id;
+
+CREATE OR REPLACE FUNCTION insert_metric_view() RETURNS TRIGGER
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+    EXECUTE format('SELECT insert_metric(%L, %L, %L)', NEW.path, NEW.value, NEW.timestamp);
+    RETURN NULL;
+END;
+$$;
+
+CREATE TRIGGER metrics_view_insert INSTEAD OF INSERT ON metrics_view
+    FOR EACH ROW EXECUTE PROCEDURE insert_metric_view();
+
