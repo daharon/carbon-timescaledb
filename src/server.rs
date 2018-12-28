@@ -17,10 +17,10 @@ use crate::config::Config;
 use crate::parse::Metric;
 
 
-static CHUNK_SIZE: usize = 2000;
-static NUM_THREADS: usize = 6;
-static CHANNEL_CAPACITY: usize = 20000;
-static WRITE_TO_DB: fn(&Connection, &[Option<Metric>]) = write_to_db_copy_in;
+static CHUNK_SIZE: usize = 1_000;
+static NUM_THREADS: usize = 1;
+static CHANNEL_CAPACITY: usize = 10_000;
+static WRITE_TO_DB: fn(&Connection, &[Option<Metric>]) = write_to_db_multi_insert;
 
 
 pub fn run(config: Arc<Config>) {
@@ -134,10 +134,23 @@ fn write_to_db_copy_in(db: &Connection, metrics: &[Option<Metric>]) {
 /// Batch-write metrics using the variadic `insert_metrics` stored procedure.
 /// `insert_metrics` can handle 100 arguments, which is a limitation of
 /// PostgreSQL.
-fn write_to_db_multi(db: &Connection, metrics: &[Option<Metric>]) {
-    let (query, params) = prepare_insert(metrics);
+fn write_to_db_multi_sp(db: &Connection, metrics: &[Option<Metric>]) {
+    let (query, params) = prepare_insert_sp(metrics);
 //    println!("Query:  {}", query);
 //    println!("Params:  {:?}", params);
+
+    let result = db.execute(&query, &params);
+    match result {
+        Ok(rows_modified) => println!("Inserted {} metric(s).", rows_modified),
+        Err(e) => eprintln!("Error from PostgreSQL:  {}", e),
+    }
+}
+
+/// Batch-write metrics using a normal `INSERT` statement.
+fn write_to_db_multi_insert(db: &Connection, metrics: &[Option<Metric>]) {
+    let (query, params) = prepare_insert(metrics);
+    println!("Query:  {}", query);
+    println!("Params:  {:?}", params);
 
     let result = db.execute(&query, &params);
     match result {
@@ -161,7 +174,7 @@ fn write_to_db_single(db: &Connection, metrics: &[Option<Metric>]) {
     }
 }
 
-fn prepare_insert<'a>(metrics: &'a [Option<Metric>]) -> (String, Vec<&'a ToSql>) {
+fn prepare_insert_sp<'a>(metrics: &'a [Option<Metric>]) -> (String, Vec<&'a ToSql>) {
     let mut tuples: Vec<String> = Vec::new();
     let mut params: Vec<&ToSql> = Vec::new();
     let mut base: usize;
@@ -176,5 +189,23 @@ fn prepare_insert<'a>(metrics: &'a [Option<Metric>]) -> (String, Vec<&'a ToSql>)
         }
     }
     let query = format!("SELECT insert_metrics({})", tuples.join(","));
+    (query, params)
+}
+
+fn prepare_insert(metrics: &[Option<Metric>]) -> (String, Vec<&ToSql>) {
+    let mut tuples: Vec<String> = Vec::new();
+    let mut params: Vec<&ToSql> = Vec::new();
+    let mut base: usize;
+    for (index, metric) in metrics.iter().enumerate() {
+        if let Some(metric) = metric {
+            base = index * 3;
+            tuples.push(format!("(${}, ${}, ${})", base + 1, base + 2, base + 3));
+
+            params.push(&metric.path);
+            params.push(&metric.value);
+            params.push(&metric.timestamp);
+        }
+    }
+    let query = format!("INSERT INTO metrics_view (path, value, \"timestamp\") VALUES {}", tuples.join(","));
     (query, params)
 }
