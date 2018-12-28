@@ -6,7 +6,7 @@ use std::net::{
     SocketAddr, TcpListener, TcpStream
 };
 
-use crossbeam_channel::{bounded, Receiver};
+use crossbeam_channel::{bounded, Receiver, Sender};
 use itertools::Itertools;
 use postgres::{
     Connection, TlsMode, params::ConnectParams, params::Host
@@ -17,13 +17,28 @@ use crate::config::Config;
 use crate::parse::Metric;
 
 
-static CHUNK_SIZE: usize = 1_000;
+static BATCH_SIZE: usize = 1_000;
 static NUM_THREADS: usize = 1;
-static CHANNEL_CAPACITY: usize = 10_000;
+static CHANNEL_CAPACITY: usize = 100_000;
 static WRITE_TO_DB: fn(&Connection, &[Option<Metric>]) = write_to_db_multi_insert;
 
 
 pub fn run(config: Arc<Config>) {
+    // Create channels for stream-handler to worker threads.
+    let (sender, receiver) = bounded::<String>(CHANNEL_CAPACITY);
+
+    // Start worker thread-pool.
+    let pool = threadpool::Builder::new()
+        .num_threads(NUM_THREADS)
+        .thread_name("worker-thread".into())
+        .build();
+    for _ in 0..NUM_THREADS {
+        let w_config = config.clone();
+        let w_receiver = receiver.clone();
+        pool.execute(move || metrics_consumer(w_config, w_receiver));
+    }
+
+    // Listen on socket.
     let addr = SocketAddr::new(config.listen_ip_addr, config.listen_port);
     let listener = TcpListener::bind(addr).unwrap();
     println!("Listening on {}:{}...", addr.ip(), addr.port());
@@ -32,34 +47,23 @@ pub fn run(config: Arc<Config>) {
         match stream {
             Ok(stream) => {
                 println!("Client connected from {}", stream.peer_addr().unwrap().ip());
-                let thread_config = config.clone();
-                thread::spawn(|| { handle_stream(thread_config, stream) });
+                let c_sender = sender.clone();
+                thread::spawn(move || handle_stream(c_sender, stream));
             },
             Err(e) => eprintln!("Client connection failed:  {}", e),
         }
     }
 }
 
-fn handle_stream(config: Arc<Config>, stream: TcpStream) {
+fn handle_stream(sender: Sender<String>, stream: TcpStream) {
     let client_ip = stream.peer_addr().unwrap().ip().clone();
-
-    // Spawn worker threads.
-    let (sender, receiver) = bounded::<String>(CHANNEL_CAPACITY);
-    for i in 0..NUM_THREADS {
-        let con_config = config.clone();
-        let con_receiver = receiver.clone();
-        thread::Builder::new()
-            .name(i.to_string())
-            .spawn(move || { metrics_consumer(con_config, con_receiver) })
-            .expect("Error spawning worker thread.");
-    }
 
     println!("Listening for metrics...");
     let buf = BufReader::new(stream);
     for line in buf.lines() {
         match line {
             Ok(data) => {
-                println!("Read the following bytes:  {}", data);
+//                println!("Read the following bytes:  {}", data);
                 sender.send(data).unwrap();
             },
             Err(e) => {
@@ -82,22 +86,23 @@ fn metrics_consumer(config: Arc<Config>, recv: Receiver<String>) {
     let db = Connection::connect(db_params, TlsMode::None).unwrap();
 
     println!("Consuming from channel...");
-    for lines_iter in &recv.iter().chunks(CHUNK_SIZE) {
-        let metrics: Vec<Option<Metric>> = lines_iter.map(|line| {
+    for lines_iter in &recv.iter().chunks(BATCH_SIZE) {
+        println!("Messages remaining in channel:  {}", recv.len());
+        let batch: Vec<Option<Metric>> = lines_iter.map(|line| {
             let parsed = line.parse::<Metric>();
             match parsed {
                 Ok(metric) => {
-                    println!("{} - Parsed metric:  {:?}", &thread_name, metric);
+//                    println!("{} - Parsed metric:  {:?}", &thread_name, metric);
                     Some(metric)
                 },
                 Err(e) => {
-                    eprintln!("{} - Error reading stream:  {}", &thread_name, e);
+                    eprintln!("{} - Error reading metric:  {}", &thread_name, e);
                     None
                 },
             }
         }).collect();
-        println!("{} - Metrics collected:  {}", thread_name, metrics.len());
-        WRITE_TO_DB(&db, &metrics);
+        println!("{} - Metrics collected:  {}", thread_name, batch.len());
+        WRITE_TO_DB(&db, &batch);
     }
 }
 
@@ -123,7 +128,7 @@ fn write_to_db_copy_in(db: &Connection, metrics: &[Option<Metric>]) {
         }
     }).fold(String::new(), |out, line| { out + line.as_str() } );
 
-    println!("Input bytes:  {}", input);
+//    println!("Input bytes:  {}", input);
     let result = stmt.copy_in(&[], &mut input.as_bytes());
     match result {
         Ok(rows_modified) => println!("Inserted {} metric(s).", rows_modified),
@@ -149,8 +154,8 @@ fn write_to_db_multi_sp(db: &Connection, metrics: &[Option<Metric>]) {
 /// Batch-write metrics using a normal `INSERT` statement.
 fn write_to_db_multi_insert(db: &Connection, metrics: &[Option<Metric>]) {
     let (query, params) = prepare_insert(metrics);
-    println!("Query:  {}", query);
-    println!("Params:  {:?}", params);
+//    println!("Query:  {}", query);
+//    println!("Params:  {:?}", params);
 
     let result = db.execute(&query, &params);
     match result {
