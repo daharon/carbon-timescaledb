@@ -6,7 +6,6 @@ edition = "2018"
 
 [dependencies]
 jemallocator = "0.1.9"
-itertools = "0.8.0"
 threadpool = "1.7.1"
 crossbeam-channel = "0.3.4"
 postgres = "0.15.2"

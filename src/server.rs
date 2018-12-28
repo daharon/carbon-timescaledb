@@ -2,12 +2,12 @@ use std::io::prelude::*;
 use std::io::BufReader;
 use std::sync::Arc;
 use std::thread;
+use std::time::Duration;
 use std::net::{
     SocketAddr, TcpListener, TcpStream
 };
 
 use crossbeam_channel::{bounded, Receiver, Sender};
-use itertools::Itertools;
 use postgres::{
     Connection, TlsMode, params::ConnectParams, params::Host
 };
@@ -18,9 +18,9 @@ use crate::parse::Metric;
 
 
 static BATCH_SIZE: usize = 1_000;
-static NUM_THREADS: usize = 1;
-static CHANNEL_CAPACITY: usize = 100_000;
-static WRITE_TO_DB: fn(&Connection, &[Option<Metric>]) = write_to_db_multi_insert;
+static NUM_THREADS: usize = 2;
+static CHANNEL_CAPACITY: usize = 500_000;
+static WRITE_TO_DB: fn(&Connection, &[Metric]) = write_to_db_multi_insert;
 
 
 pub fn run(config: Arc<Config>) {
@@ -86,46 +86,43 @@ fn metrics_consumer(config: Arc<Config>, recv: Receiver<String>) {
     let db = Connection::connect(db_params, TlsMode::None).unwrap();
 
     println!("Consuming from channel...");
-    for lines_iter in &recv.iter().chunks(BATCH_SIZE) {
+    let mut batch = Vec::<Metric>::with_capacity(BATCH_SIZE);
+    fn flush_batch(db: &Connection, batch: &mut Vec<Metric>) {
+        println!("Metrics collected:  {}", batch.len());
+        if !batch.is_empty() {
+            WRITE_TO_DB(&db, &batch);
+            batch.clear();
+        }
+    }
+    loop {
         println!("Messages remaining in channel:  {}", recv.len());
-        let batch: Vec<Option<Metric>> = lines_iter.map(|line| {
-            let parsed = line.parse::<Metric>();
-            match parsed {
-                Ok(metric) => {
-//                    println!("{} - Parsed metric:  {:?}", &thread_name, metric);
-                    Some(metric)
-                },
-                Err(e) => {
-                    eprintln!("{} - Error reading metric:  {}", &thread_name, e);
-                    None
-                },
-            }
-        }).collect();
-        println!("{} - Metrics collected:  {}", thread_name, batch.len());
-        WRITE_TO_DB(&db, &batch);
+        let payload = recv.recv_timeout(Duration::from_secs(1));
+        match payload {
+            Ok(line) => {
+                let parsed = line.parse::<Metric>();
+                match parsed {
+                    Ok(metric) => {
+                        batch.push(metric);
+                        if batch.len() == batch.capacity() {
+                            flush_batch(&db, &mut batch);
+                        }
+                    },
+                    Err(e) => eprintln!("{} - Error parsing metric:  {}", &thread_name, e),
+                }
+            },
+            Err(e) => {
+                if e.is_timeout() { flush_batch(&db, &mut batch); }
+                if e.is_disconnected() { break; }
+            },
+        }
     }
 }
 
 /// Batch-write metrics using the `COPY FROM STDIN` statement provided by [postgres::stmt::Statement::copy_in].
-fn write_to_db_copy_in(db: &Connection, metrics: &[Option<Metric>]) {
+fn write_to_db_copy_in(db: &Connection, metrics: &[Metric]) {
     let stmt = db.prepare("COPY metrics_view FROM STDIN").unwrap();
     let input = metrics.iter().map(|metric| {
-        match metric {
-            Some(m) => {
-                // Sanitize the values.
-                /*
-                let mut p_path = Vec::<u8>::new();
-                m.path.to_sql(&postgres::types::TEXT, &mut p_path);
-                let mut p_value = Vec::<u8>::new();
-                m.value.to_sql(&postgres::types::FLOAT8, &mut p_value);
-                let mut p_timestamp = Vec::<u8>::new();
-                m.timestamp.to_sql(&postgres::types::INT4, &mut p_timestamp);
-                */
-
-                format!("{}\t{}\t{}\n", m.path, m.timestamp, m.value)
-            },
-            None => String::new(),
-        }
+        format!("{}\t{}\t{}\n", metric.path, metric.timestamp, metric.value)
     }).fold(String::new(), |out, line| { out + line.as_str() } );
 
 //    println!("Input bytes:  {}", input);
@@ -139,8 +136,8 @@ fn write_to_db_copy_in(db: &Connection, metrics: &[Option<Metric>]) {
 /// Batch-write metrics using the variadic `insert_metrics` stored procedure.
 /// `insert_metrics` can handle 100 arguments, which is a limitation of
 /// PostgreSQL.
-fn write_to_db_multi_sp(db: &Connection, metrics: &[Option<Metric>]) {
-    let (query, params) = prepare_insert_sp(metrics);
+fn write_to_db_multi_sp(db: &Connection, metrics: &[Metric]) {
+    let (query, params) = prepare_multi_sp(metrics);
 //    println!("Query:  {}", query);
 //    println!("Params:  {:?}", params);
 
@@ -152,8 +149,8 @@ fn write_to_db_multi_sp(db: &Connection, metrics: &[Option<Metric>]) {
 }
 
 /// Batch-write metrics using a normal `INSERT` statement.
-fn write_to_db_multi_insert(db: &Connection, metrics: &[Option<Metric>]) {
-    let (query, params) = prepare_insert(metrics);
+fn write_to_db_multi_insert(db: &Connection, metrics: &[Metric]) {
+    let (query, params) = prepare_multi_insert(metrics);
 //    println!("Query:  {}", query);
 //    println!("Params:  {:?}", params);
 
@@ -166,51 +163,40 @@ fn write_to_db_multi_insert(db: &Connection, metrics: &[Option<Metric>]) {
 
 /// Write metrics using the `insert_metric` stored procedure.
 /// Metrics will be written one at a time.
-fn write_to_db_single(db: &Connection, metrics: &[Option<Metric>]) {
+fn write_to_db_single(db: &Connection, metrics: &[Metric]) {
     for metric in metrics {
-        if let Some(m) = metric {
-            let result = db.execute("SELECT insert_metric($1, $2, $3)",
-                &[&m.path, &m.value, &m.timestamp]);
-            match result {
-                Ok(rows_modified) => println!("Inserted {} metric(s).", rows_modified),
-                Err(e) => eprintln!("Error from PostgreSQL:  {}", e),
-            }
+        let result = db.execute("SELECT insert_metric($1, $2, $3)",
+            &[&metric.path, &metric.value, &metric.timestamp]);
+        match result {
+            Ok(rows_modified) => println!("Inserted {} metric(s).", rows_modified),
+            Err(e) => eprintln!("Error from PostgreSQL:  {}", e),
         }
     }
 }
 
-fn prepare_insert_sp<'a>(metrics: &'a [Option<Metric>]) -> (String, Vec<&'a ToSql>) {
-    let mut tuples: Vec<String> = Vec::new();
-    let mut params: Vec<&ToSql> = Vec::new();
-    let mut base: usize;
-    for (index, metric) in metrics.iter().enumerate() {
-        if let Some(metric) = metric {
-            base = index * 3;
-            tuples.push(format!("(${}, ${}, ${})", base + 1, base + 2, base + 3));
-
-            params.push(&metric.path);
-            params.push(&metric.value);
-            params.push(&metric.timestamp);
-        }
-    }
+fn prepare_multi_sp(metrics: &[Metric]) -> (String, Vec<&ToSql>) {
+    let (tuples, params) = prepare_multi_params(metrics);
     let query = format!("SELECT insert_metrics({})", tuples.join(","));
     (query, params)
 }
 
-fn prepare_insert(metrics: &[Option<Metric>]) -> (String, Vec<&ToSql>) {
+fn prepare_multi_insert(metrics: &[Metric]) -> (String, Vec<&ToSql>) {
+    let (tuples, params) = prepare_multi_params(metrics);
+    let query = format!("INSERT INTO metrics_view (path, value, \"timestamp\") VALUES {}", tuples.join(","));
+    (query, params)
+}
+
+fn prepare_multi_params(metrics: &[Metric]) -> (Vec<String>, Vec<&ToSql>) {
     let mut tuples: Vec<String> = Vec::new();
     let mut params: Vec<&ToSql> = Vec::new();
     let mut base: usize;
     for (index, metric) in metrics.iter().enumerate() {
-        if let Some(metric) = metric {
-            base = index * 3;
-            tuples.push(format!("(${}, ${}, ${})", base + 1, base + 2, base + 3));
+        base = index * 3;
+        tuples.push(format!("(${}, ${}, ${})", base + 1, base + 2, base + 3));
 
-            params.push(&metric.path);
-            params.push(&metric.value);
-            params.push(&metric.timestamp);
-        }
+        params.push(&metric.path);
+        params.push(&metric.value);
+        params.push(&metric.timestamp);
     }
-    let query = format!("INSERT INTO metrics_view (path, value, \"timestamp\") VALUES {}", tuples.join(","));
-    (query, params)
+    (tuples, params)
 }
