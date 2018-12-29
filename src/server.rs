@@ -12,6 +12,7 @@ use postgres::{
     Connection, TlsMode, params::ConnectParams, params::Host
 };
 use postgres::types::ToSql;
+use rayon::ThreadPoolBuilder;
 
 use crate::config::Config;
 use crate::parse::Metric;
@@ -24,19 +25,23 @@ static WRITE_TO_DB: fn(&Connection, &[Metric]) = write_to_db_multi_insert;
 
 
 pub fn run(config: Arc<Config>) {
+    // Config clone to be moved into the thread-pool.
+    let consumer_config = config.clone();
+
     // Create channels for stream-handler to worker threads.
     let (sender, receiver) = bounded::<String>(CHANNEL_CAPACITY);
 
     // Start worker thread-pool.
-    let pool = threadpool::Builder::new()
+    let _pool = ThreadPoolBuilder::new()
         .num_threads(NUM_THREADS)
-        .thread_name("worker-thread".into())
-        .build();
-    for _ in 0..NUM_THREADS {
-        let w_config = config.clone();
-        let w_receiver = receiver.clone();
-        pool.execute(move || metrics_consumer(w_config, w_receiver));
-    }
+        .thread_name(|index| format!("worker-thread-{}", index))
+        .start_handler(move |_| {
+            let w_config = consumer_config.clone();
+            let w_receiver = receiver.clone();
+            metrics_consumer(w_config, w_receiver);
+        })
+        .build()
+        .expect("Failed to instantiate thread-pool.");
 
     // Listen on socket.
     let addr = SocketAddr::new(config.listen_ip_addr, config.listen_port);
@@ -77,7 +82,7 @@ fn handle_stream(sender: Sender<String>, stream: TcpStream) {
 fn metrics_consumer(config: Arc<Config>, recv: Receiver<String>) {
     let thread_name = thread::current().name().unwrap().to_string();
 
-    println!("Connecting to database `{}` at {}:{}...", config.db_name, config.db_host, config.db_port);
+    println!("{} - Connecting to database `{}` at {}:{}...", thread_name, config.db_name, config.db_host, config.db_port);
     let db_params = ConnectParams::builder()
         .port(config.db_port)
         .database(&config.db_name)
@@ -85,7 +90,7 @@ fn metrics_consumer(config: Arc<Config>, recv: Receiver<String>) {
         .build(Host::Tcp(config.db_host.clone()));
     let db = Connection::connect(db_params, TlsMode::None).unwrap();
 
-    println!("Consuming from channel...");
+    println!("{} - Consuming from channel...", thread_name);
     let mut batch = Vec::<Metric>::with_capacity(BATCH_SIZE);
     fn flush_batch(db: &Connection, batch: &mut Vec<Metric>) {
         println!("Metrics collected:  {}", batch.len());
@@ -95,7 +100,7 @@ fn metrics_consumer(config: Arc<Config>, recv: Receiver<String>) {
         }
     }
     loop {
-        println!("Messages remaining in channel:  {}", recv.len());
+        println!("{} - Messages remaining in channel:  {}", thread_name, recv.len());
         let payload = recv.recv_timeout(Duration::from_secs(1));
         match payload {
             Ok(line) => {
@@ -107,7 +112,7 @@ fn metrics_consumer(config: Arc<Config>, recv: Receiver<String>) {
                             flush_batch(&db, &mut batch);
                         }
                     },
-                    Err(e) => eprintln!("{} - Error parsing metric:  {}", &thread_name, e),
+                    Err(e) => eprintln!("{} - Error parsing metric:  {}", thread_name, e),
                 }
             },
             Err(e) => {

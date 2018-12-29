@@ -6,6 +6,6 @@ edition = "2018"
 
 [dependencies]
 jemallocator = "0.1.9"
-threadpool = "1.7.1"
+rayon = "1.0.3"
 crossbeam-channel = "0.3.4"
 postgres = "0.15.2"
