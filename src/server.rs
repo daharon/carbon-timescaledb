@@ -18,9 +18,7 @@ use crate::parse::Metric;
 use crate::write_to_db;
 
 
-static BATCH_SIZE: usize = 1_000;
-static NUM_THREADS: usize = 2;
-static CHANNEL_CAPACITY: usize = 500_000;
+// Used to easily switch between the database writer implementations for testing.
 static WRITE_TO_DB: fn(&Connection, &[Metric]) = write_to_db::multi_insert;
 
 
@@ -29,11 +27,11 @@ pub fn run(config: Arc<Config>) {
     let consumer_config = config.clone();
 
     // Create channels for stream-handler to worker threads.
-    let (sender, receiver) = bounded::<String>(CHANNEL_CAPACITY);
+    let (sender, receiver) = bounded::<String>(config.max_cache_size);
 
     // Start worker thread-pool.
     let _pool = ThreadPoolBuilder::new()
-        .num_threads(NUM_THREADS)
+        .num_threads(config.concurrency as usize)
         .thread_name(|index| format!("worker-thread-{}", index))
         .start_handler(move |_| {
             let w_config = consumer_config.clone();
@@ -91,7 +89,7 @@ fn metrics_consumer(config: Arc<Config>, recv: Receiver<String>) {
     let db = Connection::connect(db_params, TlsMode::None).unwrap();
 
     debug!("{} - Consuming from channel...", thread_name);
-    let mut batch = Vec::<Metric>::with_capacity(BATCH_SIZE);
+    let mut batch = Vec::<Metric>::with_capacity(config.batch_size.into());
     fn flush_batch(db: &Connection, batch: &mut Vec<Metric>) {
         debug!("Metrics collected:  {}", batch.len());
         if !batch.is_empty() {
@@ -99,6 +97,7 @@ fn metrics_consumer(config: Arc<Config>, recv: Receiver<String>) {
             batch.clear();
         }
     }
+
     loop {
         debug!("{} - Messages remaining in channel:  {}", thread_name, recv.len());
         let payload = recv.recv_timeout(Duration::from_secs(1));
