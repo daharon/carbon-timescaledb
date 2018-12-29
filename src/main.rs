@@ -2,6 +2,8 @@ use std::sync::Arc;
 use std::net::IpAddr;
 use std::str::FromStr;
 
+use simplelog::{LevelFilter, SimpleLogger};
+
 use carbon_timescaledb::config::Config;
 use carbon_timescaledb::server;
 
@@ -11,6 +13,9 @@ static ALLOC: jemallocator::Jemalloc = jemallocator::Jemalloc;
 
 
 fn main() {
+    SimpleLogger::init(LevelFilter::Info, simplelog::Config::default())
+        .expect("Failed to initialize logging.");
+
     let config = Config {
         listen_ip_addr: IpAddr::from_str("127.0.0.1").unwrap(),
         listen_port: 2003,
