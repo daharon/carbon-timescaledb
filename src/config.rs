@@ -5,6 +5,7 @@ use clap::ArgMatches;
 
 pub struct Config {
     // Server
+    pub log_level: log::LevelFilter,
     pub listen_ip_addr: IpAddr,
     pub listen_port: u16,
     // Database
@@ -24,6 +25,7 @@ impl Config {
         use clap::value_t_or_exit;
 
         let matches = parse();
+        let log_level = value_t_or_exit!(matches.value_of("log-level"), log::LevelFilter);
         let listen_ip_addr = value_t_or_exit!(matches.value_of("listen-address"), IpAddr);
         let listen_port = value_t_or_exit!(matches.value_of("listen-port"), u16);
         let db_port = value_t_or_exit!(matches.value_of("port"), u16);
@@ -31,6 +33,7 @@ impl Config {
         let max_cache_size = value_t_or_exit!(matches.value_of("max-cache-size"), usize);
         let batch_size = value_t_or_exit!(matches.value_of("batch-size"), u16);
         Self {
+            log_level,
             listen_ip_addr,
             listen_port,
             db_host: matches.value_of("host").unwrap().to_string(),
@@ -125,5 +128,13 @@ fn parse() -> ArgMatches<'static> {
             .takes_value(true)
             .default_value("100")
             .value_name("NUM"))
+        .arg(Arg::with_name("log-level")
+            .short("l")
+            .long("log-level")
+            .help("Log level (TRACE, DEBUG, ERROR, WARN, INFO).")
+            .required(false)
+            .takes_value(true)
+            .default_value("info")
+            .value_name("LEVEL"))
         .get_matches()
 }

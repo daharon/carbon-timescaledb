@@ -30,6 +30,7 @@ pub fn run(config: Arc<Config>) {
     let (sender, receiver) = bounded::<String>(config.max_cache_size);
 
     // Start worker thread-pool.
+    // TODO:  Move back to https://crates.io/crates/threadpool
     let _pool = ThreadPoolBuilder::new()
         .num_threads(config.concurrency as usize)
         .thread_name(|index| format!("worker-thread-{}", index))

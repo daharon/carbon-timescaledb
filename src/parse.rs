@@ -30,6 +30,7 @@ impl fmt::Display for MetricParseError {
 impl FromStr for Metric {
     type Err = MetricParseError;
 
+    // TODO:  Fix up this parsing.
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let mut parts = s.split_whitespace();
         let path = String::from(parts.next().unwrap());
